@@ -80,6 +80,14 @@ class MirrorStreamServer(
         Logger.i("MirrorStreamServer stopped")
     }
 
+    /** Called from the main thread when the Activity's Surface is ready again. */
+    fun notifySurfaceAvailable() {
+        val live = surfaceProvider()
+        if (live === configuredSurface && decoder != null) return
+        Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder")
+        rebuildDecoder(live)
+    }
+
     // ─── Network reader thread: read + decrypt (ordered), enqueue, never block on decode ──────
     private fun runReader() {
         try {
@@ -201,7 +209,7 @@ class MirrorStreamServer(
         // Re-attach to the live Surface if it changed (the app was backgrounded and returned, so the
         // SurfaceView made a new Surface). Without this, video stays black after foregrounding.
         val liveSurface = surfaceProvider()
-        if (liveSurface !== configuredSurface) {
+        if (shouldRebuildForSurface(liveSurface, configuredSurface)) {
             Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — re-attaching decoder")
             rebuildDecoder(liveSurface)
         }
@@ -272,3 +280,6 @@ class MirrorStreamServer(
         private const val SURFACE_WAIT_MS = 100L
     }
 }
+
+internal fun shouldRebuildForSurface(live: Any?, configured: Any?): Boolean =
+    live !== configured

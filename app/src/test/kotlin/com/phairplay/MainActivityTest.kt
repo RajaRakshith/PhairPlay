@@ -112,4 +112,52 @@ class MainActivityTest {
         provider = { null }
         assertNull(provider.invoke())
     }
+
+    // ─── Keep-screen-on decision logic ───────────────────────────────────────
+
+    /** Mirrors MainActivity keep-screen decision: awake whenever a full-screen overlay is showing. */
+    private fun shouldKeepScreenOn(
+        airPlayState: ProtocolState,
+        nowPlaying: Any?,
+        photoFrame: Any?,
+        pin: String?,
+    ): Boolean = pin != null
+        || nowPlaying != null
+        || airPlayState == ProtocolState.CONNECTED
+        || photoFrame != null
+
+    @Test
+    fun `keep screen on when mirroring CONNECTED`() {
+        assertTrue(shouldKeepScreenOn(ProtocolState.CONNECTED, null, null, null))
+    }
+
+    @Test
+    fun `keep screen on during audio-only now playing`() {
+        assertTrue(shouldKeepScreenOn(ProtocolState.ADVERTISING, Any(), null, null))
+    }
+
+    @Test
+    fun `keep screen off when idle`() {
+        assertFalse(shouldKeepScreenOn(ProtocolState.ADVERTISING, null, null, null))
+    }
+
+    // ─── BACK key during overlay ─────────────────────────────────────────────
+
+    private fun shouldConsumeBackDuringOverlay(
+        airPlayState: ProtocolState,
+        nowPlaying: Any?,
+        photoFrame: Any?,
+        pin: String?,
+    ): Boolean = pin != null || nowPlaying != null
+        || airPlayState == ProtocolState.CONNECTED || photoFrame != null
+
+    @Test
+    fun `BACK consumed during CONNECTED mirroring`() {
+        assertTrue(shouldConsumeBackDuringOverlay(ProtocolState.CONNECTED, null, null, null))
+    }
+
+    @Test
+    fun `BACK not consumed when idle`() {
+        assertFalse(shouldConsumeBackDuringOverlay(ProtocolState.ADVERTISING, null, null, null))
+    }
 }

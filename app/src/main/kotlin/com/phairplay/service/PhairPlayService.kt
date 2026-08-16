@@ -161,6 +161,11 @@ class PhairPlayService : Service() {
         airPlayReceiver?.sendRemoteCommand(command)
     }
 
+    /** Called when MainActivity's streaming Surface becomes available (resume or surfaceCreated). */
+    fun notifyVideoSurfaceAvailable() {
+        airPlayReceiver?.notifyVideoSurfaceAvailable()
+    }
+
     override fun onDestroy() {
         Logger.i("PhairPlayService destroying")
         stopAllReceiversInternal()

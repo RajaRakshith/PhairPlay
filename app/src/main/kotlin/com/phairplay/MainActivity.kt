@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.os.IBinder
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
@@ -23,11 +22,8 @@ import com.phairplay.service.ProtocolState
 import com.phairplay.service.ServiceController
 import com.phairplay.airplay.NowPlayingInfo
 import com.phairplay.ui.HomeFragment
-import com.phairplay.ui.NowPlayingScreen
-import com.phairplay.ui.PhotoScreen
-import com.phairplay.ui.PinScreen
 import com.phairplay.ui.SettingsFragment
-import com.phairplay.ui.StreamingScreen
+import com.phairplay.ui.StreamingOverlayHost
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -52,19 +48,12 @@ import timber.log.Timber
  */
 class MainActivity : AppCompatActivity() {
 
-    // UI references
     private lateinit var navItemHome: TextView
     private lateinit var navItemSettings: TextView
     private lateinit var contentContainer: FrameLayout
     private lateinit var streamingContainer: FrameLayout
+    private lateinit var overlayHost: StreamingOverlayHost
 
-    // The SurfaceView for full-screen video output
-    private lateinit var streamingScreen: StreamingScreen
-    private lateinit var photoScreen: PhotoScreen
-    private lateinit var nowPlayingScreen: NowPlayingScreen
-    private lateinit var pinScreen: PinScreen
-
-    // Service binding — gives access to state flows for showing/hiding the streaming overlay
     private var service: PhairPlayService? = null
     private var isBound = false
     private var currentAirPlayState = ProtocolState.DISABLED
@@ -77,12 +66,8 @@ class MainActivity : AppCompatActivity() {
             service = (binder as? PhairPlayService.LocalBinder)?.getService()
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
-
-            // Wire the streaming Surface so the service can pass it to VideoDecoder
-            service?.setVideoSurfaceProvider { getVideoSurface() }
+            service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
             notifyVideoSurfaceIfBound()
-
-            // Show/hide the full-screen overlay for video streams and photos.
             observeOverlayState()
         }
 
@@ -93,7 +78,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Currently selected nav item index (0 = Home, 1 = Settings)
     private var selectedNavIndex = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,19 +86,15 @@ class MainActivity : AppCompatActivity() {
 
         Timber.d("MainActivity created")
         bindViews()
-        setupOverlayScreens()
+        setupOverlayHost()
         setupNavigation()
         setupBackPressHandler()
 
-        // Show HomeFragment on first launch
         if (savedInstanceState == null) {
             navigateTo(HomeFragment(), navItemHome)
         }
 
-        // Start the service immediately so it's running before any sender discovers us
         ServiceController.start(this)
-
-        // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS
         requestNotificationPermission()
     }
 
@@ -122,20 +102,18 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // Provider may have been cleared in onStop; restore immediately if already bound
         // (onServiceConnected also sets it — covers bind completing before onResume).
-        service?.setVideoSurfaceProvider { getVideoSurface() }
+        service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
         notifyVideoSurfaceIfBound()
     }
 
     override fun onStart() {
         super.onStart()
-        // Bind so we can observe StateFlows and supply the video Surface
         val intent = Intent(this, PhairPlayService::class.java)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     override fun onStop() {
         super.onStop()
-        // Clear surface reference before unbinding to avoid holding a dead Surface
         service?.setVideoSurfaceProvider { null }
         if (isBound) {
             unbindService(serviceConnection)
@@ -144,13 +122,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        OverlaySessionPolicy.setKeepScreenOn(window, false)
         super.onDestroy()
-        // A user-initiated exit (Back out of the app) should end any active mirror — closing the
-        // service stops the receiver, which drops the RTSP connection so the sender stops mirroring
-        // too. isFinishing distinguishes a real exit from a config-change recreation (where the
-        // service must keep running). Backgrounding via Home goes through onStop only (no destroy),
-        // so the receiver keeps advertising for a quick return.
+        // User Back-exit stops the service so the sender drops the RTSP session.
+        // Config-change recreation and Home-background must leave the service running.
         if (isFinishing) {
             Timber.d("MainActivity finishing — stopping service so mirroring doesn't linger")
             ServiceController.stop(this)
@@ -159,83 +134,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ─── View Setup ──────────────────────────────────────────────────────────
-
     private fun bindViews() {
-        navItemHome       = findViewById(R.id.nav_item_home)
-        navItemSettings   = findViewById(R.id.nav_item_settings)
-        contentContainer  = findViewById(R.id.content_container)
+        navItemHome        = findViewById(R.id.nav_item_home)
+        navItemSettings    = findViewById(R.id.nav_item_settings)
+        contentContainer   = findViewById(R.id.content_container)
         streamingContainer = findViewById(R.id.streaming_container)
     }
 
-    /**
-     * Creates the StreamingScreen (SurfaceView for video) and adds it to the
-     * streaming_container. Created eagerly so the Surface is ready before streaming starts.
-     */
-    private fun setupOverlayScreens() {
-        streamingScreen = StreamingScreen(this)
-        photoScreen = PhotoScreen(this)
-        nowPlayingScreen = NowPlayingScreen(this)
-        pinScreen = PinScreen(this)
-        streamingContainer.addView(streamingScreen)
-        streamingContainer.addView(photoScreen)
-        streamingContainer.addView(nowPlayingScreen)
-        streamingContainer.addView(pinScreen)
-        streamingScreen.onSurfaceReady = { notifyVideoSurfaceIfBound() }
-        streamingScreen.onSurfaceLost = {
-            Timber.d("MainActivity: streaming surface lost")
-        }
-        photoScreen.visibility = View.GONE
-        nowPlayingScreen.visibility = View.GONE
-        pinScreen.visibility = View.GONE
+    private fun setupOverlayHost() {
+        overlayHost = StreamingOverlayHost(this, streamingContainer)
+        overlayHost.attach()
+        overlayHost.onSurfaceReady = { notifyVideoSurfaceIfBound() }
+        overlayHost.onSurfaceLost = { Timber.d("MainActivity: streaming surface lost") }
     }
 
-    /**
-     * Sets up click listeners for the navigation panel items.
-     * Also updates the visual selected state (text color) of the active item.
-     */
     private fun setupNavigation() {
         navItemHome.setOnClickListener {
-            if (selectedNavIndex != 0) {
-                navigateTo(HomeFragment(), navItemHome)
-            }
+            if (selectedNavIndex != 0) navigateTo(HomeFragment(), navItemHome)
         }
         navItemSettings.setOnClickListener {
-            if (selectedNavIndex != 1) {
-                navigateTo(SettingsFragment(), navItemSettings)
-            }
+            if (selectedNavIndex != 1) navigateTo(SettingsFragment(), navItemSettings)
         }
-
-        // Set initial selected state
         setNavSelected(navItemHome, true)
         setNavSelected(navItemSettings, false)
     }
 
-    /**
-     * Replaces the content_container fragment with [fragment] and updates
-     * the nav panel selection highlight.
-     *
-     * @param fragment  The Fragment to show in the content area.
-     * @param navItem   The nav panel TextView that was clicked (for highlight update).
-     */
     private fun navigateTo(fragment: Fragment, navItem: TextView) {
-        // Update nav highlight
         setNavSelected(navItemHome, navItem == navItemHome)
         setNavSelected(navItemSettings, navItem == navItemSettings)
         selectedNavIndex = if (navItem == navItemHome) 0 else 1
-
-        // Replace fragment
         supportFragmentManager.beginTransaction()
             .replace(R.id.content_container, fragment)
             .commit()
     }
 
-    /**
-     * Updates the nav panel item's visual state.
-     *
-     * @param item     The nav item TextView.
-     * @param selected True if this item is currently active.
-     */
     private fun setNavSelected(item: TextView, selected: Boolean) {
         item.isSelected = selected
         item.setTextColor(
@@ -243,76 +175,21 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Shows the full-screen streaming overlay (called by PhairPlayService
-     * via a state update or broadcast when a stream becomes active).
-     *
-     * Hides the nav panel and content area to give the stream the full screen.
-     */
-    fun showStreamingScreen() {
-        photoScreen.visibility = View.GONE
-        nowPlayingScreen.visibility = View.GONE
-        nowPlayingScreen.clear()
-        pinScreen.visibility = View.GONE
-        streamingScreen.visibility = View.VISIBLE
-        streamingContainer.visibility = View.VISIBLE
-        streamingContainer.bringToFront()
-    }
-
-    fun showPhotoScreen(photoFrame: PhotoFrame) {
-        if (photoScreen.showPhoto(photoFrame.bytes)) {
-            streamingScreen.visibility = View.GONE
-            nowPlayingScreen.visibility = View.GONE
-            pinScreen.visibility = View.GONE
-            photoScreen.visibility = View.VISIBLE
-            streamingContainer.visibility = View.VISIBLE
-            streamingContainer.bringToFront()
-        }
-    }
-
-    /** Shows the audio-only now-playing card (AirPlay audio with no video). */
-    fun showNowPlayingScreen(info: NowPlayingInfo) {
-        nowPlayingScreen.update(info)
-        streamingScreen.visibility = View.GONE
-        photoScreen.visibility = View.GONE
-        pinScreen.visibility = View.GONE
-        nowPlayingScreen.visibility = View.VISIBLE
-        streamingContainer.visibility = View.VISIBLE
-        streamingContainer.bringToFront()
-    }
-
-    /**
-     * Hides the streaming overlay and returns to the normal app UI.
-     * Called when a stream ends.
-     */
-    fun hideStreamingScreen() {
-        photoScreen.clearPhoto()
-        photoScreen.visibility = View.GONE
-        nowPlayingScreen.clear()
-        nowPlayingScreen.visibility = View.GONE
-        pinScreen.visibility = View.GONE
-        streamingScreen.visibility = View.VISIBLE
-        streamingContainer.visibility = View.GONE
-    }
-
-    /** Returns the SurfaceView Surface for the VideoDecoder. */
-    fun getVideoSurface() = streamingScreen.getSurface()
-
     private fun notifyVideoSurfaceIfBound() {
         if (!isBound) return
         service?.notifyVideoSurfaceAvailable()
     }
 
+    /**
+     * Ignores BACK while an overlay is showing so the Activity is not finished.
+     *
+     * WHY: Finishing MainActivity stops PhairPlayService, which tears down RTSP.
+     * Home still backgrounds the app; BACK during a stream is a no-op.
+     */
     private fun setupBackPressHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val overlayActive = currentPin != null
-                    || currentNowPlaying != null
-                    || currentAirPlayState == ProtocolState.CONNECTED
-                    || currentPhotoFrame != null
-                if (overlayActive) {
-                    // Don't finish the Activity (which stops the service + drops AirPlay).
-                    // User can press Home to background; BACK during stream is a no-op.
+                if (isOverlayActive()) {
                     Timber.d("MainActivity: BACK ignored during active stream overlay")
                     return
                 }
@@ -375,8 +252,6 @@ class MainActivity : AppCompatActivity() {
         private const val PERMISSION_REQUEST_NOTIFICATIONS = 1001
     }
 
-    // ─── Streaming overlay ────────────────────────────────────────────────────
-
     /**
      * Observes [PhairPlayService.airPlayState] and [PhairPlayService.photoFrame]
      * and shows the appropriate full-screen overlay.
@@ -417,38 +292,16 @@ class MainActivity : AppCompatActivity() {
         val nowPlaying = currentNowPlaying
         val pin = currentPin
         when {
-            // PIN pairing (access control) happens before streaming — show the code over everything.
-            pin != null -> showPinScreen(pin)
-            // Audio-only AirPlay (system audio, Music, podcasts): show the now-playing card instead
-            // of the black video surface. Set whenever audio plays without video.
-            nowPlaying != null -> showNowPlayingScreen(nowPlaying)
-            currentAirPlayState == ProtocolState.CONNECTED -> showStreamingScreen()
-            photoFrame != null -> showPhotoScreen(photoFrame)
-            else -> hideStreamingScreen()
+            pin != null -> overlayHost.showPin(pin)
+            nowPlaying != null -> overlayHost.showNowPlaying(nowPlaying)
+            currentAirPlayState == ProtocolState.CONNECTED -> overlayHost.showStreaming()
+            photoFrame != null -> overlayHost.showPhoto(photoFrame)
+            else -> overlayHost.hide()
         }
-        updateKeepScreenOn()
+        OverlaySessionPolicy.setKeepScreenOn(window, isOverlayActive())
     }
 
-    private fun updateKeepScreenOn() {
-        val keepAwake = currentPin != null
-            || currentNowPlaying != null
-            || currentAirPlayState == ProtocolState.CONNECTED
-            || currentPhotoFrame != null
-        if (keepAwake) {
-            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        } else {
-            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-    }
-
-    /** Shows the AirPlay pairing PIN over the full screen during SRP pair-setup. */
-    fun showPinScreen(pin: String) {
-        pinScreen.setPin(pin)
-        streamingScreen.visibility = View.GONE
-        photoScreen.visibility = View.GONE
-        nowPlayingScreen.visibility = View.GONE
-        pinScreen.visibility = View.VISIBLE
-        streamingContainer.visibility = View.VISIBLE
-        streamingContainer.bringToFront()
-    }
+    private fun isOverlayActive(): Boolean = OverlaySessionPolicy.isOverlayActive(
+        currentAirPlayState, currentNowPlaying, currentPhotoFrame, currentPin
+    )
 }

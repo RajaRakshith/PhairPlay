@@ -194,7 +194,12 @@ class AirPlayReceiver(
     /** True once a sender has advertised DACP reverse-control (so the TV remote can drive playback). */
     fun isRemoteControlAvailable(): Boolean = dacpClient.isAvailable
 
-    /** Proactively rebind all active video outputs to the current Surface. */
+    /**
+     * Rebinds mirror, URL-video, and legacy RECORD decoders to the current Activity Surface.
+     *
+     * WHY: Screensaver dismiss and returning from Home create a new SurfaceView Surface.
+     * Without a proactive reattach, the sender keeps streaming but the TV stays black.
+     */
     fun notifyVideoSurfaceAvailable() {
         mirrorServer?.notifySurfaceAvailable()
         urlVideoPlayer?.attachSurface()
@@ -350,14 +355,20 @@ class AirPlayReceiver(
         Logger.i("VideoDecoder started (${DEFAULT_VIDEO_WIDTH}x${DEFAULT_VIDEO_HEIGHT} hint)")
     }
 
+    /**
+     * Rebuilds the RECORD-path VideoDecoder on the live Surface using cached SPS/PPS.
+     *
+     * WHY: The legacy (non-mirror) pipeline has no MirrorStreamServer, so surface
+     * recovery must release and recreate VideoDecoder the same way rebuildDecoder does.
+     * Cached SessionDescription is required because SDP is not resent after RECORD.
+     */
     private fun reattachLegacyVideoDecoder() {
         val surface = videoSurfaceProvider() ?: return
         val decoder = videoDecoder ?: return
         val session = lastSessionDescription ?: return
         val sps = session.spsBytes ?: return
         val pps = session.ppsBytes ?: return
-        // Release and rebuild — same pattern as MirrorStreamServer.rebuildDecoder
-        videoDecoder?.release()
+        decoder.release()
         videoDecoder = VideoDecoder(surface).also { d ->
             d.initialize(sps, pps, DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT)
             rtspHandler?.onVideoNalUnit = { nal, pts -> d.decodeNalUnit(nal, pts) }

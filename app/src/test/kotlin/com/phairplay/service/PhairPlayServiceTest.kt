@@ -176,9 +176,14 @@ class PhairPlayServiceTest {
         assertNull("Provider must return null after Activity stops", currentProvider.invoke())
     }
 
+    /**
+     * Test: notifyVideoSurfaceAvailable is a no-op when the receiver is not started.
+     *
+     * WHY: MainActivity calls this from onResume/surfaceCreated before startAirPlay()
+     * and after stop. Swallowing the null receiver prevents a crash on those paths.
+     */
     @Test
     fun `notifyVideoSurfaceAvailable is safe when receiver not started`() {
-        // Documents contract: method must not throw when airPlayReceiver == null.
         // Full Android test would call service.notifyVideoSurfaceAvailable(); here we
         // assert the action constant namespace is stable (compile-time proxy).
         assertTrue(PhairPlayService.ACTION_START.startsWith("com.phairplay.action."))

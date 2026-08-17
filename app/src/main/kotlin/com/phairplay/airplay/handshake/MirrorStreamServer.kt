@@ -80,10 +80,17 @@ class MirrorStreamServer(
         Logger.i("MirrorStreamServer stopped")
     }
 
-    /** Called from the main thread when the Activity's Surface is ready again. */
+    /**
+     * Rebuilds the hardware decoder if the Activity Surface changed or none is attached.
+     *
+     * WHY: After screensaver dismiss or Home→return, SurfaceView creates a new Surface.
+     * MediaCodec stays bound to the old one, so video goes black until we rebuild.
+     * Skip when the live Surface is already configured so onResume + surfaceCreated
+     * do not drop a GOP of frames by rebuilding twice.
+     */
     fun notifySurfaceAvailable() {
         val live = surfaceProvider()
-        if (live === configuredSurface && decoder != null) return
+        if (shouldSkipNotifyRebuild(live, configuredSurface, decoder != null)) return
         Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder")
         rebuildDecoder(live)
     }
@@ -281,5 +288,20 @@ class MirrorStreamServer(
     }
 }
 
+/**
+ * True when the decoder must be rebuilt because [live] is not the Surface already configured.
+ *
+ * WHY: MediaCodec binds to Surface identity. After screensaver/Home, SurfaceView
+ * allocates a new Surface object; `!==` detects that without depending on Surface.equals.
+ */
 internal fun shouldRebuildForSurface(live: Any?, configured: Any?): Boolean =
     live !== configured
+
+/**
+ * True when [MirrorStreamServer.notifySurfaceAvailable] can no-op.
+ *
+ * WHY: onResume and surfaceCreated both notify. Rebuilding a healthy decoder
+ * attached to the live Surface would stall video until the next keyframe.
+ */
+internal fun shouldSkipNotifyRebuild(live: Any?, configured: Any?, hasDecoder: Boolean): Boolean =
+    live === configured && hasDecoder

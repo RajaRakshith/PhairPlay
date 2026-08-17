@@ -85,4 +85,30 @@ class MirrorStreamServerSurfaceTest {
     fun `do not skip notify when surface identity changed`() {
         assertFalse(shouldSkipNotifyRebuild(Any(), Any(), hasDecoder = true))
     }
+
+    /**
+     * Test: same Surface reference but invalid must rebuild.
+     *
+     * WHY: Some devices keep the Java object after buffer teardown; MediaCodec
+     * output to that Surface stays black unless we rebuild despite `===`.
+     */
+    @Test
+    fun `rebuild when surface identity matches but is invalid`() {
+        val surface = Any()
+        assertTrue(shouldRebuildForSurface(surface, surface, liveSurfaceValid = false))
+    }
+
+    /**
+     * Test: notify must not skip when the live Surface is invalid.
+     *
+     * WHY: onResume re-notifies before surfaceCreated; an invalid cached Surface
+     * must not block proactive decoder rebuild.
+     */
+    @Test
+    fun `do not skip notify when surface identity matches but is invalid`() {
+        val surface = Any()
+        assertFalse(
+            shouldSkipNotifyRebuild(surface, surface, hasDecoder = true, liveSurfaceValid = false)
+        )
+    }
 }

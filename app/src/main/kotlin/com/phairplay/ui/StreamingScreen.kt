@@ -125,6 +125,15 @@ class StreamingScreen @JvmOverloads constructor(
         })
     }
 
+    /** Re-invokes [onSurfaceReady] when a valid Surface already exists (resume without surfaceCreated). */
+    fun notifySurfaceIfReady() {
+        val s = surface ?: return
+        if (s.isValid) {
+            Logger.d("StreamingScreen: Surface already valid — re-notifying")
+            onSurfaceReady?.invoke()
+        }
+    }
+
     /**
      * Returns the [Surface] where decoded video frames will be rendered.
      *

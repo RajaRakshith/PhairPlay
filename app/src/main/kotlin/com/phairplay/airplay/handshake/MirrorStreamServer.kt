@@ -90,7 +90,7 @@ class MirrorStreamServer(
      */
     fun notifySurfaceAvailable() {
         val live = surfaceProvider()
-        if (shouldSkipNotifyRebuild(live, configuredSurface, decoder != null)) return
+        if (shouldSkipNotifyRebuild(live, configuredSurface, decoder != null, live?.isValid == true)) return
         Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder")
         rebuildDecoder(live)
     }
@@ -216,7 +216,7 @@ class MirrorStreamServer(
         // Re-attach to the live Surface if it changed (the app was backgrounded and returned, so the
         // SurfaceView made a new Surface). Without this, video stays black after foregrounding.
         val liveSurface = surfaceProvider()
-        if (shouldRebuildForSurface(liveSurface, configuredSurface)) {
+        if (shouldRebuildForSurface(liveSurface, configuredSurface, liveSurface?.isValid != false)) {
             Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — re-attaching decoder")
             rebuildDecoder(liveSurface)
         }
@@ -294,14 +294,22 @@ class MirrorStreamServer(
  * WHY: MediaCodec binds to Surface identity. After screensaver/Home, SurfaceView
  * allocates a new Surface object; `!==` detects that without depending on Surface.equals.
  */
-internal fun shouldRebuildForSurface(live: Any?, configured: Any?): Boolean =
-    live !== configured
+internal fun shouldRebuildForSurface(
+    live: Any?,
+    configured: Any?,
+    liveSurfaceValid: Boolean = true,
+): Boolean = live !== configured || (live != null && !liveSurfaceValid)
 
 /**
  * True when [MirrorStreamServer.notifySurfaceAvailable] can no-op.
  *
  * WHY: onResume and surfaceCreated both notify. Rebuilding a healthy decoder
  * attached to the live Surface would stall video until the next keyframe.
+ * An invalid Surface (same reference, dead buffer queue) must never skip.
  */
-internal fun shouldSkipNotifyRebuild(live: Any?, configured: Any?, hasDecoder: Boolean): Boolean =
-    live === configured && hasDecoder
+internal fun shouldSkipNotifyRebuild(
+    live: Any?,
+    configured: Any?,
+    hasDecoder: Boolean,
+    liveSurfaceValid: Boolean = true,
+): Boolean = live != null && liveSurfaceValid && live === configured && hasDecoder

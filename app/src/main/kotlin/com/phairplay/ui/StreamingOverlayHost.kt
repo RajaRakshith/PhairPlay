@@ -107,6 +107,9 @@ class StreamingOverlayHost(
 
     fun getVideoSurface() = streamingScreen.getSurface()
 
+    /** Re-notifies listeners when the Surface survived backgrounding without surfaceCreated. */
+    fun notifySurfaceIfReady() = streamingScreen.notifySurfaceIfReady()
+
     private fun showContainer() {
         container.visibility = View.VISIBLE
         container.bringToFront()

@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity() {
 
     private var service: PhairPlayService? = null
     private var isBound = false
+    private var overlayStateObserving = false
     private var currentAirPlayState = ProtocolState.DISABLED
     private var currentPhotoFrame: PhotoFrame? = null
     private var currentNowPlaying: NowPlayingInfo? = null
@@ -67,7 +68,7 @@ class MainActivity : AppCompatActivity() {
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
             service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
-            notifyVideoSurfaceIfBound()
+            notifyVideoSurfaceAvailable()
             observeOverlayState()
         }
 
@@ -100,10 +101,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Provider may have been cleared in onStop; restore immediately if already bound
-        // (onServiceConnected also sets it — covers bind completing before onResume).
         service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
-        notifyVideoSurfaceIfBound()
+        // Re-show the overlay from cached state (StateFlow may not re-emit on rebind).
+        if (isOverlayActive()) updateOverlay()
+        overlayHost.notifySurfaceIfReady()
+        notifyVideoSurfaceAvailable()
     }
 
     override fun onStart() {
@@ -114,15 +116,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Drop the Surface reference while backgrounded; keep the service bound so
+        // onResume can reattach immediately without waiting for bindService.
         service?.setVideoSurfaceProvider { null }
-        if (isBound) {
-            unbindService(serviceConnection)
-            isBound = false
-        }
     }
 
     override fun onDestroy() {
         OverlaySessionPolicy.setKeepScreenOn(window, false)
+        if (isBound) {
+            unbindService(serviceConnection)
+            isBound = false
+            service = null
+        }
         super.onDestroy()
         // User Back-exit stops the service so the sender drops the RTSP session.
         // Config-change recreation and Home-background must leave the service running.
@@ -144,7 +149,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupOverlayHost() {
         overlayHost = StreamingOverlayHost(this, streamingContainer)
         overlayHost.attach()
-        overlayHost.onSurfaceReady = { notifyVideoSurfaceIfBound() }
+        overlayHost.onSurfaceReady = { notifyVideoSurfaceAvailable() }
         overlayHost.onSurfaceLost = { Timber.d("MainActivity: streaming surface lost") }
     }
 
@@ -175,8 +180,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun notifyVideoSurfaceIfBound() {
-        if (!isBound) return
+    private fun notifyVideoSurfaceAvailable() {
         service?.notifyVideoSurfaceAvailable()
     }
 
@@ -260,6 +264,8 @@ class MainActivity : AppCompatActivity() {
      * by [lifecycleScope] when the Activity stops.
      */
     private fun observeOverlayState() {
+        if (overlayStateObserving) return
+        overlayStateObserving = true
         val svc = service ?: return
         lifecycleScope.launch {
             svc.airPlayState.collectLatest { state ->

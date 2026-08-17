@@ -106,6 +106,7 @@ class AirPlayReceiver(
     private var rtspHandler: RtspHandler? = null
     private var timingHandler: TimingHandler? = null
     private var videoDecoder: VideoDecoder? = null
+    @Volatile private var lastSessionDescription: SessionDescription? = null
     private var audioPlayer: AudioPlayer? = null
 
     // UDP socket for receiving audio RTP packets — opened after RECORD, closed on TEARDOWN
@@ -192,6 +193,13 @@ class AirPlayReceiver(
 
     /** True once a sender has advertised DACP reverse-control (so the TV remote can drive playback). */
     fun isRemoteControlAvailable(): Boolean = dacpClient.isAvailable
+
+    /** Proactively rebind all active video outputs to the current Surface. */
+    fun notifyVideoSurfaceAvailable() {
+        mirrorServer?.notifySurfaceAvailable()
+        urlVideoPlayer?.attachSurface()
+        reattachLegacyVideoDecoder()
+    }
 
     // ─── Private: startup ────────────────────────────────────────────────────
 
@@ -332,6 +340,7 @@ class AirPlayReceiver(
             return
         }
 
+        lastSessionDescription = session
         videoDecoder = VideoDecoder(surface).also { decoder ->
             decoder.initialize(sps, pps, DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT)
             rtspHandler?.onVideoNalUnit = { nalUnit, ptsUs ->
@@ -339,6 +348,21 @@ class AirPlayReceiver(
             }
         }
         Logger.i("VideoDecoder started (${DEFAULT_VIDEO_WIDTH}x${DEFAULT_VIDEO_HEIGHT} hint)")
+    }
+
+    private fun reattachLegacyVideoDecoder() {
+        val surface = videoSurfaceProvider() ?: return
+        val decoder = videoDecoder ?: return
+        val session = lastSessionDescription ?: return
+        val sps = session.spsBytes ?: return
+        val pps = session.ppsBytes ?: return
+        // Release and rebuild — same pattern as MirrorStreamServer.rebuildDecoder
+        videoDecoder?.release()
+        videoDecoder = VideoDecoder(surface).also { d ->
+            d.initialize(sps, pps, DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT)
+            rtspHandler?.onVideoNalUnit = { nal, pts -> d.decodeNalUnit(nal, pts) }
+        }
+        Logger.i("Legacy VideoDecoder reattached after surface recovery")
     }
 
     /**
@@ -561,6 +585,7 @@ class AirPlayReceiver(
         mirrorAesKey = null
         mirrorEcdhSecret = null
         mirrorAesIv = null
+        lastSessionDescription = null
         videoDecoder?.release()
         videoDecoder = null
         audioPlayer?.release()

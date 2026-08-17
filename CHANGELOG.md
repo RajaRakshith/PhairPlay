@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (Fire TV)
+
+- Keep the screen awake during active AirPlay mirroring so the TV screensaver does not interrupt playback
+- Recover video output when the Activity returns from background (screensaver dismiss, Home → return) without requiring an AirPlay restart from the sender
+
 ---
 
 ## [1.0.0-beta.1] - 2026-06-14

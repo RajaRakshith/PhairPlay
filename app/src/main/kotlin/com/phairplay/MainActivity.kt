@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -79,6 +80,7 @@ class MainActivity : AppCompatActivity() {
 
             // Wire the streaming Surface so the service can pass it to VideoDecoder
             service?.setVideoSurfaceProvider { getVideoSurface() }
+            notifyVideoSurfaceIfBound()
 
             // Show/hide the full-screen overlay for video streams and photos.
             observeOverlayState()
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity() {
         bindViews()
         setupOverlayScreens()
         setupNavigation()
+        setupBackPressHandler()
 
         // Show HomeFragment on first launch
         if (savedInstanceState == null) {
@@ -113,6 +116,14 @@ class MainActivity : AppCompatActivity() {
 
         // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS
         requestNotificationPermission()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Provider may have been cleared in onStop; restore immediately if already bound
+        // (onServiceConnected also sets it — covers bind completing before onResume).
+        service?.setVideoSurfaceProvider { getVideoSurface() }
+        notifyVideoSurfaceIfBound()
     }
 
     override fun onStart() {
@@ -133,6 +144,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onDestroy()
         // A user-initiated exit (Back out of the app) should end any active mirror — closing the
         // service stops the receiver, which drops the RTSP connection so the sender stops mirroring
@@ -169,6 +181,10 @@ class MainActivity : AppCompatActivity() {
         streamingContainer.addView(photoScreen)
         streamingContainer.addView(nowPlayingScreen)
         streamingContainer.addView(pinScreen)
+        streamingScreen.onSurfaceReady = { notifyVideoSurfaceIfBound() }
+        streamingScreen.onSurfaceLost = {
+            Timber.d("MainActivity: streaming surface lost")
+        }
         photoScreen.visibility = View.GONE
         nowPlayingScreen.visibility = View.GONE
         pinScreen.visibility = View.GONE
@@ -282,6 +298,31 @@ class MainActivity : AppCompatActivity() {
     /** Returns the SurfaceView Surface for the VideoDecoder. */
     fun getVideoSurface() = streamingScreen.getSurface()
 
+    private fun notifyVideoSurfaceIfBound() {
+        if (!isBound) return
+        service?.notifyVideoSurfaceAvailable()
+    }
+
+    private fun setupBackPressHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val overlayActive = currentPin != null
+                    || currentNowPlaying != null
+                    || currentAirPlayState == ProtocolState.CONNECTED
+                    || currentPhotoFrame != null
+                if (overlayActive) {
+                    // Don't finish the Activity (which stops the service + drops AirPlay).
+                    // User can press Home to background; BACK during stream is a no-op.
+                    Timber.d("MainActivity: BACK ignored during active stream overlay")
+                    return
+                }
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
+        })
+    }
+
     /**
      * Routes TV-remote media keys to the AirPlay sender (DACP reverse control) while audio-only or a
      * stream is showing — so the remote can play/pause/skip what the Mac/iPhone is streaming. Returns
@@ -384,6 +425,19 @@ class MainActivity : AppCompatActivity() {
             currentAirPlayState == ProtocolState.CONNECTED -> showStreamingScreen()
             photoFrame != null -> showPhotoScreen(photoFrame)
             else -> hideStreamingScreen()
+        }
+        updateKeepScreenOn()
+    }
+
+    private fun updateKeepScreenOn() {
+        val keepAwake = currentPin != null
+            || currentNowPlaying != null
+            || currentAirPlayState == ProtocolState.CONNECTED
+            || currentPhotoFrame != null
+        if (keepAwake) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 

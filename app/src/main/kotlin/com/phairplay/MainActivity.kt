@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.view.KeyEvent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.widget.FrameLayout
@@ -68,6 +69,7 @@ class MainActivity : AppCompatActivity() {
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
             service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
+            syncOverlayFromService()
             notifyVideoSurfaceAvailable()
             observeOverlayState()
         }
@@ -102,27 +104,24 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
-        // Re-show the overlay from cached state (StateFlow may not re-emit on rebind).
-        if (isOverlayActive()) updateOverlay()
+        // Activity is often recreated on Home→return; pull live session state from the service.
+        syncOverlayFromService()
         overlayHost.notifySurfaceIfReady()
         notifyVideoSurfaceAvailable()
     }
 
     override fun onStart() {
         super.onStart()
+        if (isBound) return
         val intent = Intent(this, PhairPlayService::class.java)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
-    override fun onStop() {
-        super.onStop()
-        // Drop the Surface reference while backgrounded; keep the service bound so
-        // onResume can reattach immediately without waiting for bindService.
-        service?.setVideoSurfaceProvider { null }
-    }
-
     override fun onDestroy() {
         OverlaySessionPolicy.setKeepScreenOn(window, false)
+        service?.setVideoSurfaceProvider { null }
+        service?.notifyVideoSurfaceAvailable()
+        overlayHost.releaseRetainedSurface()
         if (isBound) {
             unbindService(serviceConnection)
             isBound = false
@@ -205,11 +204,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Blocks D-pad navigation from reaching the Home nav panel while a stream overlay is up.
+     *
+     * WHY: The overlay is a sibling of [R.id.nav_panel] in the layout. Without consuming
+     * direction keys, focus stays on Home/Settings and users hear navigation clicks under
+     * a black streaming layer — the bug report for Home→return during mirroring.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (overlayHost.isShowing() && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT -> return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /**
      * Routes TV-remote media keys to the AirPlay sender (DACP reverse control) while audio-only or a
      * stream is showing — so the remote can play/pause/skip what the Mac/iPhone is streaming. Returns
      * false for other keys so normal navigation is unaffected.
      */
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val overlayActive = currentNowPlaying != null || currentAirPlayState == ProtocolState.CONNECTED
         if (overlayActive) {
             val command = when (keyCode) {
@@ -293,16 +311,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Re-reads overlay-driving StateFlows from the bound service and applies [updateOverlay].
+     *
+     * WHY: Pressing Home on Android TV frequently destroys MainActivity. A fresh instance
+     * starts with [currentAirPlayState] = DISABLED even though the ForegroundService still
+     * has CONNECTED + an active mirror — waiting for async Flow collection leaves the Home UI
+     * visible (nav sounds, black content area) until the user restarts AirPlay.
+     */
+    private fun syncOverlayFromService() {
+        val svc = service ?: return
+        currentAirPlayState = svc.airPlayState.value
+        currentPhotoFrame = svc.photoFrame.value
+        currentNowPlaying = svc.nowPlaying.value
+        currentPin = svc.pairingPin.value
+        updateOverlay()
+    }
+
     private fun updateOverlay() {
-        val photoFrame = currentPhotoFrame
-        val nowPlaying = currentNowPlaying
-        val pin = currentPin
-        when {
-            pin != null -> overlayHost.showPin(pin)
-            nowPlaying != null -> overlayHost.showNowPlaying(nowPlaying)
-            currentAirPlayState == ProtocolState.CONNECTED -> overlayHost.showStreaming()
-            photoFrame != null -> overlayHost.showPhoto(photoFrame)
-            else -> overlayHost.hide()
+        when (OverlaySessionPolicy.resolveOverlayMode(
+            currentAirPlayState, currentNowPlaying, currentPhotoFrame, currentPin
+        )) {
+            OverlayMode.PIN -> overlayHost.showPin(currentPin!!)
+            OverlayMode.NOW_PLAYING -> overlayHost.showNowPlaying(currentNowPlaying!!)
+            OverlayMode.STREAMING -> overlayHost.showStreaming()
+            OverlayMode.PHOTO -> overlayHost.showPhoto(currentPhotoFrame!!)
+            OverlayMode.HIDE -> overlayHost.hide()
         }
         OverlaySessionPolicy.setKeepScreenOn(window, isOverlayActive())
     }

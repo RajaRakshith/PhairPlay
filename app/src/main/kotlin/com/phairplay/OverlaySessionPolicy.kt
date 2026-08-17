@@ -5,6 +5,13 @@ import android.view.WindowManager
 import com.phairplay.service.ProtocolState
 
 /**
+ * Which full-screen overlay [MainActivity] should present.
+ *
+ * WHY: Extracted so Home→return overlay restoration is unit-testable without Robolectric.
+ */
+enum class OverlayMode { HIDE, PIN, NOW_PLAYING, STREAMING, PHOTO }
+
+/**
  * OverlaySessionPolicy — Decides when an AirPlay overlay must keep the TV awake.
  *
  * WHY: TV screensaver and idle display-off interrupt mirroring. The same overlay-active
@@ -15,6 +22,26 @@ import com.phairplay.service.ProtocolState
  *   OverlaySessionPolicy.setKeepScreenOn(window, active)
  */
 object OverlaySessionPolicy {
+
+    /**
+     * Picks the overlay to show from the current AirPlay session signals.
+     *
+     * WHY: MainActivity caches these fields locally. After Home→return the Activity is often
+     * recreated with defaults (DISABLED) while PhairPlayService still holds CONNECTED — the
+     * UI must re-read service StateFlow values, not rely on stale caches or async re-collect.
+     */
+    fun resolveOverlayMode(
+        airPlayState: ProtocolState,
+        nowPlaying: Any?,
+        photoFrame: Any?,
+        pin: String?,
+    ): OverlayMode = when {
+        pin != null -> OverlayMode.PIN
+        nowPlaying != null -> OverlayMode.NOW_PLAYING
+        airPlayState == ProtocolState.CONNECTED -> OverlayMode.STREAMING
+        photoFrame != null -> OverlayMode.PHOTO
+        else -> OverlayMode.HIDE
+    }
 
     /**
      * True when a full-screen overlay (PIN, audio-only, mirroring, or photo) is showing.

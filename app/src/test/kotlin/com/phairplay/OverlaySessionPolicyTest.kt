@@ -1,6 +1,7 @@
 package com.phairplay
 
 import com.phairplay.service.ProtocolState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -91,6 +92,36 @@ class OverlaySessionPolicyTest {
         )
         assertFalse(
             OverlaySessionPolicy.isOverlayActive(ProtocolState.ERROR, null, null, null)
+        )
+    }
+
+    /**
+     * Test: CONNECTED in the service maps to STREAMING even when Activity defaults to DISABLED.
+     *
+     * WHY: Home→return recreates MainActivity; syncOverlayFromService must restore the
+     * streaming overlay from live service state, not stale Activity fields.
+     */
+    @Test
+    fun `resolveOverlayMode shows streaming for CONNECTED`() {
+        assertEquals(
+            OverlayMode.STREAMING,
+            OverlaySessionPolicy.resolveOverlayMode(ProtocolState.CONNECTED, null, null, null)
+        )
+    }
+
+    @Test
+    fun `resolveOverlayMode hides when Activity defaults with idle service`() {
+        assertEquals(
+            OverlayMode.HIDE,
+            OverlaySessionPolicy.resolveOverlayMode(ProtocolState.DISABLED, null, null, null)
+        )
+    }
+
+    @Test
+    fun `resolveOverlayMode prefers PIN over streaming`() {
+        assertEquals(
+            OverlayMode.PIN,
+            OverlaySessionPolicy.resolveOverlayMode(ProtocolState.CONNECTED, null, null, "1234")
         )
     }
 }

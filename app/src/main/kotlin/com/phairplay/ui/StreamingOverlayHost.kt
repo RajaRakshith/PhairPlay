@@ -27,7 +27,7 @@ class StreamingOverlayHost(
     private val nowPlayingScreen = NowPlayingScreen(context)
     private val pinScreen = PinScreen(context)
 
-    /** Called on the main thread when SurfaceView has a new rendering Surface. */
+    /** Called on the main thread when TextureView has a rendering Surface. */
     var onSurfaceReady: (() -> Unit)?
         get() = streamingScreen.onSurfaceReady
         set(value) { streamingScreen.onSurfaceReady = value }
@@ -107,11 +107,20 @@ class StreamingOverlayHost(
 
     fun getVideoSurface() = streamingScreen.getSurface()
 
-    /** Re-notifies listeners when the Surface survived backgrounding without surfaceCreated. */
+    /** True when the full-screen overlay container is visible to the user. */
+    fun isShowing(): Boolean = container.visibility == View.VISIBLE
+
+    /** Re-notifies listeners when the Surface survived backgrounding without a new callback. */
     fun notifySurfaceIfReady() = streamingScreen.notifySurfaceIfReady()
+
+    /** Releases the retained TextureView SurfaceTexture. Call from Activity.onDestroy. */
+    fun releaseRetainedSurface() = streamingScreen.releaseRetainedSurface()
 
     private fun showContainer() {
         container.visibility = View.VISIBLE
         container.bringToFront()
+        // Pull focus off the nav panel / HomeFragment so D-pad clicks don't leak through
+        // while mirroring (TV users otherwise hear navigation sounds under a black overlay).
+        container.requestFocus()
     }
 }

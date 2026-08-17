@@ -9,10 +9,9 @@ import org.junit.Test
 /**
  * MirrorStreamServerSurfaceTest — Unit tests for Surface identity recovery helpers.
  *
- * WHY: After screensaver dismiss or Home→return, SurfaceView allocates a new Surface.
+ * WHY: After screensaver dismiss or Home→return, a new Surface may be allocated.
  * MediaCodec stays bound to the old object, so video goes black unless the decoder
- * is rebuilt. These helpers are the branch conditions used by decodeFrame and
- * notifySurfaceAvailable.
+ * is rebuilt. These helpers are the branch conditions used by the decoder thread.
  *
  * HOW: Compare object identity with placeholders (Any) because android.view.Surface
  * is not available in the JVM test runner.
@@ -22,7 +21,7 @@ class MirrorStreamServerSurfaceTest {
     /**
      * Test: a new Surface object must trigger a decoder rebuild.
      *
-     * WHY: SurfaceView does not reuse the previous Surface after destruction.
+     * WHY: When TextureView cannot retain the SurfaceTexture, a new Surface is allocated.
      */
     @Test
     fun `rebuild when surface identity changes`() {
@@ -45,7 +44,8 @@ class MirrorStreamServerSurfaceTest {
     /**
      * Test: returning from background (null → new Surface) rebuilds.
      *
-     * WHY: onStop clears the provider to { null }; onResume supplies a new Surface.
+     * WHY: If the retained SurfaceTexture is released, the provider is null until
+     * the new TextureView is ready; the first non-null Surface must rebuild.
      */
     @Test
     fun `rebuild when returning from background null to new surface`() {

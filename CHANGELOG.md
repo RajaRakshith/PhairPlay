@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed (Fire TV)
 
 - Keep the screen awake during active AirPlay mirroring so the TV screensaver does not interrupt playback
-- Recover video output when the Activity returns from background (screensaver dismiss, Home → return) without requiring an AirPlay restart from the sender
+- Home recovery now works: pressing Home during AirPlay and reopening the app restores the Mac screen without restarting the session. The connection was never dropping (audio kept playing); SurfaceView destroyed its buffers on pause, so MediaCodec kept decoding to a dead surface and the UI showed a black overlay. TextureView retains the SurfaceTexture across Home so the same surface stays valid.
 
 ---
 

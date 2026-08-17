@@ -51,9 +51,8 @@ class MirrorStreamServer(
     @Volatile private var decoder: VideoDecoder? = null   // owned by the decoder thread
     private var lastSps: ByteArray? = null
     private var lastPps: ByteArray? = null
-    // The Surface the current decoder was built against. The SurfaceView destroys its Surface when
-    // the app backgrounds and creates a NEW one on return, so we watch for the identity changing
-    // and rebuild the decoder — otherwise video stays black after foregrounding.
+    // The Surface the current decoder was built against. TextureView can retain its
+    // SurfaceTexture across Home; if a new Surface is allocated we rebuild the decoder.
     @Volatile private var configuredSurface: Surface? = null
     private var framePtsUs = 0L
     private var framesIn = 0
@@ -62,6 +61,8 @@ class MirrorStreamServer(
     // Set by the reader thread when a frame is dropped under load; the decoder thread then skips
     // frames until the next keyframe (IDR) so it never decodes a reference-broken, corrupt stream.
     @Volatile private var awaitingKeyframe = false
+    // Set from the main thread; consumed only on the decoder thread (MediaCodec is not thread-safe).
+    @Volatile private var surfaceRebuildRequested = false
 
     /** The OS-assigned TCP port macOS should connect to (returned in the SETUP response). */
     val dataPort: Int get() = serverSocket.localPort
@@ -81,18 +82,14 @@ class MirrorStreamServer(
     }
 
     /**
-     * Rebuilds the hardware decoder if the Activity Surface changed or none is attached.
+     * Asks the decoder thread to rebind if the Activity Surface changed.
      *
-     * WHY: After screensaver dismiss or Home→return, SurfaceView creates a new Surface.
-     * MediaCodec stays bound to the old one, so video goes black until we rebuild.
-     * Skip when the live Surface is already configured so onResume + surfaceCreated
-     * do not drop a GOP of frames by rebuilding twice.
+     * WHY: MediaCodec is not thread-safe. Rebuilding from onResume raced the decoder
+     * thread, marked the codec unhealthy, and wiped cached SPS/PPS — after that the
+     * screen stayed black until the sender resent config (often never).
      */
     fun notifySurfaceAvailable() {
-        val live = surfaceProvider()
-        if (shouldSkipNotifyRebuild(live, configuredSurface, decoder != null)) return
-        Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder")
-        rebuildDecoder(live)
+        surfaceRebuildRequested = true
     }
 
     // ─── Network reader thread: read + decrypt (ordered), enqueue, never block on decode ──────
@@ -167,6 +164,7 @@ class MirrorStreamServer(
     private fun runDecoder() {
         try {
             while (running) {
+                maybeRebuildForSurface()
                 val item = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
                 when (item) {
                     is Config -> configureDecoder(item.sps, item.pps)
@@ -179,6 +177,22 @@ class MirrorStreamServer(
             decoder?.release()
             decoder = null
         }
+    }
+
+    /**
+     * Rebuilds on the decoder thread when onResume requested it or the live Surface changed.
+     */
+    private fun maybeRebuildForSurface() {
+        val live = surfaceProvider()
+        val requested = surfaceRebuildRequested
+        if (requested) surfaceRebuildRequested = false
+        val identityChanged = shouldRebuildForSurface(live, configuredSurface, live?.isValid != false)
+        if (!requested && !identityChanged) return
+        if (requested && shouldSkipNotifyRebuild(live, configuredSurface, decoder != null, live?.isValid == true)) {
+            return
+        }
+        Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder (requested=$requested)")
+        rebuildDecoder(live)
     }
 
     private fun configureDecoder(sps: ByteArray, pps: ByteArray) {
@@ -204,26 +218,30 @@ class MirrorStreamServer(
         configuredSurface = surface
         val sps = lastSps ?: return
         val pps = lastPps ?: return
-        if (surface == null) return                            // backgrounded — wait for the surface to return
-        val sc = MirrorCrypto.START_CODE
-        decoder = VideoDecoder(surface).also { it.initialize(sc + sps, sc + pps, width, height) }
-        awaitingKeyframe = true                                // a fresh decoder must start at an IDR
-        StreamStats.videoRes = "${width}x${height}"
-        Logger.i("Mirror decoder (re)built for surface (sps=${sps.size}B pps=${pps.size}B)")
+        if (surface == null || !surface.isValid) {
+            configuredSurface = null
+            return
+        }
+        try {
+            val sc = MirrorCrypto.START_CODE
+            decoder = VideoDecoder(surface).also { it.initialize(sc + sps, sc + pps, width, height) }
+            awaitingKeyframe = true
+            StreamStats.videoRes = "${width}x${height}"
+            Logger.i("Mirror decoder (re)built for surface (sps=${sps.size}B pps=${pps.size}B)")
+        } catch (e: Exception) {
+            Logger.e("Mirror decoder rebuild failed", e)
+            decoder = null
+            configuredSurface = null
+        }
     }
 
     private fun decodeFrame(annexB: ByteArray) {
-        // Re-attach to the live Surface if it changed (the app was backgrounded and returned, so the
-        // SurfaceView made a new Surface). Without this, video stays black after foregrounding.
-        val liveSurface = surfaceProvider()
-        if (shouldRebuildForSurface(liveSurface, configuredSurface)) {
-            Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — re-attaching decoder")
-            rebuildDecoder(liveSurface)
-        }
-        val d = decoder ?: return                              // need surface + SPS/PPS first
-        if (!d.isHealthy) {                                    // error state — drop, await next config
-            Logger.w("Mirror: decoder unhealthy — dropping, awaiting new SPS/PPS")
-            d.release(); decoder = null; configuredSurface = null; lastSps = null; lastPps = null
+        maybeRebuildForSurface()
+        val d = decoder ?: return
+        if (!d.isHealthy) {
+            // Keep SPS/PPS — macOS often never resends them on an already-live session.
+            Logger.w("Mirror: decoder unhealthy — rebuilding with cached SPS/PPS")
+            rebuildDecoder(surfaceProvider())
             return
         }
         if (awaitingKeyframe) {
@@ -291,17 +309,25 @@ class MirrorStreamServer(
 /**
  * True when the decoder must be rebuilt because [live] is not the Surface already configured.
  *
- * WHY: MediaCodec binds to Surface identity. After screensaver/Home, SurfaceView
- * allocates a new Surface object; `!==` detects that without depending on Surface.equals.
+ * WHY: MediaCodec binds to Surface identity. After Home, a new Surface may be allocated
+ * if the TextureView could not retain its SurfaceTexture; `!==` detects that.
  */
-internal fun shouldRebuildForSurface(live: Any?, configured: Any?): Boolean =
-    live !== configured
+internal fun shouldRebuildForSurface(
+    live: Any?,
+    configured: Any?,
+    liveSurfaceValid: Boolean = true,
+): Boolean = live !== configured || (live != null && !liveSurfaceValid)
 
 /**
  * True when [MirrorStreamServer.notifySurfaceAvailable] can no-op.
  *
  * WHY: onResume and surfaceCreated both notify. Rebuilding a healthy decoder
  * attached to the live Surface would stall video until the next keyframe.
+ * An invalid Surface (same reference, dead buffer queue) must never skip.
  */
-internal fun shouldSkipNotifyRebuild(live: Any?, configured: Any?, hasDecoder: Boolean): Boolean =
-    live === configured && hasDecoder
+internal fun shouldSkipNotifyRebuild(
+    live: Any?,
+    configured: Any?,
+    hasDecoder: Boolean,
+    liveSurfaceValid: Boolean = true,
+): Boolean = live != null && liveSurfaceValid && live === configured && hasDecoder

@@ -112,4 +112,6 @@ class MainActivityTest {
         provider = { null }
         assertNull(provider.invoke())
     }
+
+    // Keep-screen-on and BACK-during-overlay are tested in OverlaySessionPolicyTest.
 }

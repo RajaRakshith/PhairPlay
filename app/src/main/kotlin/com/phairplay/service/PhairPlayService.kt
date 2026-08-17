@@ -161,6 +161,17 @@ class PhairPlayService : Service() {
         airPlayReceiver?.sendRemoteCommand(command)
     }
 
+    /**
+     * Forwards Surface-ready notifications from MainActivity to [AirPlayReceiver].
+     *
+     * WHY: The Activity owns the SurfaceView; the receiver owns MediaCodec. This hop
+     * lets screensaver/resume recovery reattach decoders without the Activity reaching
+     * into handshake types. No-op when the receiver has not started.
+     */
+    fun notifyVideoSurfaceAvailable() {
+        airPlayReceiver?.notifyVideoSurfaceAvailable()
+    }
+
     override fun onDestroy() {
         Logger.i("PhairPlayService destroying")
         stopAllReceiversInternal()

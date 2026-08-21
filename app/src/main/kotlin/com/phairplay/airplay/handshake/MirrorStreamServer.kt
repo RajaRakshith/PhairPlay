@@ -188,7 +188,13 @@ class MirrorStreamServer(
         if (requested) surfaceRebuildRequested = false
         val identityChanged = shouldRebuildForSurface(live, configuredSurface, live?.isValid != false)
         if (!requested && !identityChanged) return
-        if (requested && shouldSkipNotifyRebuild(live, configuredSurface, decoder != null, live?.isValid == true)) {
+        if (requested && shouldSkipNotifyRebuild(
+                live,
+                configuredSurface,
+                decoder != null,
+                liveSurfaceValid = live?.isValid == true,
+                configuredSurfaceValid = configuredSurface?.isValid != false,
+            )) {
             return
         }
         Logger.i("Mirror: notifySurfaceAvailable — rebuilding decoder (requested=$requested)")
@@ -330,4 +336,6 @@ internal fun shouldSkipNotifyRebuild(
     configured: Any?,
     hasDecoder: Boolean,
     liveSurfaceValid: Boolean = true,
-): Boolean = live != null && liveSurfaceValid && live === configured && hasDecoder
+    configuredSurfaceValid: Boolean = true,
+): Boolean = live != null && liveSurfaceValid && configuredSurfaceValid
+    && live === configured && hasDecoder

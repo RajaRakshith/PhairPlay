@@ -111,4 +111,24 @@ class MirrorStreamServerSurfaceTest {
             shouldSkipNotifyRebuild(surface, surface, hasDecoder = true, liveSurfaceValid = false)
         )
     }
+
+    /**
+     * Test: notify must not skip when configured Surface is invalid even if live matches.
+     *
+     * WHY: After Activity onDestroy the Java Surface object can outlive its buffer queue;
+     * configuredSurface still references it while isValid becomes false.
+     */
+    @Test
+    fun `do not skip notify when configured surface is invalid`() {
+        val surface = Any()
+        assertFalse(
+            shouldSkipNotifyRebuild(
+                surface,
+                surface,
+                hasDecoder = true,
+                liveSurfaceValid = true,
+                configuredSurfaceValid = false,
+            )
+        )
+    }
 }

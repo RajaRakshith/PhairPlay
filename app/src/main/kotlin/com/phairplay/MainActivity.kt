@@ -1,5 +1,6 @@
 package com.phairplay
 
+import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -62,13 +63,15 @@ class MainActivity : AppCompatActivity() {
     private var currentPhotoFrame: PhotoFrame? = null
     private var currentNowPlaying: NowPlayingInfo? = null
     private var currentPin: String? = null
+    /** Token so a stale Activity onDestroy cannot clear a newer instance's surface provider. */
+    private val surfaceOwner = Any()
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = (binder as? PhairPlayService.LocalBinder)?.getService()
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
-            service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
+            registerVideoSurfaceProvider()
             syncOverlayFromService()
             notifyVideoSurfaceAvailable()
             observeOverlayState()
@@ -99,14 +102,22 @@ class MainActivity : AppCompatActivity() {
 
         ServiceController.start(this)
         requestNotificationPermission()
+        bringTaskToFrontIfRequested(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        bringTaskToFrontIfRequested(intent)
+        syncOverlayFromService()
     }
 
     override fun onResume() {
         super.onResume()
-        service?.setVideoSurfaceProvider { overlayHost.getVideoSurface() }
+        registerVideoSurfaceProvider()
         // Activity is often recreated on Home→return; pull live session state from the service.
         syncOverlayFromService()
-        overlayHost.notifySurfaceIfReady()
+        overlayHost.ensureVideoSurfaceReady()
         notifyVideoSurfaceAvailable()
     }
 
@@ -119,8 +130,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         OverlaySessionPolicy.setKeepScreenOn(window, false)
-        service?.setVideoSurfaceProvider { null }
-        service?.notifyVideoSurfaceAvailable()
+        if (service?.clearVideoSurfaceProvider(surfaceOwner) == true) {
+            service?.notifyVideoSurfaceAvailable()
+        }
         overlayHost.releaseRetainedSurface()
         if (isBound) {
             unbindService(serviceConnection)
@@ -177,6 +189,10 @@ class MainActivity : AppCompatActivity() {
         item.setTextColor(
             getColor(if (selected) R.color.text_primary else R.color.nav_item_normal)
         )
+    }
+
+    private fun registerVideoSurfaceProvider() {
+        service?.setVideoSurfaceProvider(surfaceOwner) { overlayHost.getVideoSurface() }
     }
 
     private fun notifyVideoSurfaceAvailable() {
@@ -344,4 +360,23 @@ class MainActivity : AppCompatActivity() {
     private fun isOverlayActive(): Boolean = OverlaySessionPolicy.isOverlayActive(
         currentAirPlayState, currentNowPlaying, currentPhotoFrame, currentPin
     )
+
+    /**
+     * Backup TV foreground promotion when [SessionLaunchHelper] starts us from background.
+     *
+     * WHY: Leanback can deliver the launch Intent without switching away from the app on screen;
+     * moveTaskToFront from the Activity complements AppTask.moveToFront from the service.
+     */
+    private fun bringTaskToFrontIfRequested(intent: Intent?) {
+        if (intent?.getBooleanExtra(SessionLaunchIntentFlags.EXTRA_BRING_TASK_TO_FRONT, false) != true) {
+            return
+        }
+        try {
+            val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+            am.moveTaskToFront(taskId, ActivityManager.MOVE_TASK_WITH_HOME)
+            Timber.d("MainActivity: moveTaskToFront for AirPlay session launch")
+        } catch (e: Exception) {
+            Timber.w("MainActivity: moveTaskToFront failed — ${e.message}")
+        }
+    }
 }

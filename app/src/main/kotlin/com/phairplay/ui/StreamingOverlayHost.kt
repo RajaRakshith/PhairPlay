@@ -60,6 +60,8 @@ class StreamingOverlayHost(
         pinScreen.visibility = View.GONE
         streamingScreen.visibility = View.VISIBLE
         showContainer()
+        // Layout may run after visibility; surfaceCreated can lag showStreaming/onResume.
+        streamingScreen.post { streamingScreen.ensureSurfaceReady() }
     }
 
     /**
@@ -112,6 +114,11 @@ class StreamingOverlayHost(
 
     /** Re-notifies listeners when the Surface survived backgrounding without a new callback. */
     fun notifySurfaceIfReady() = streamingScreen.notifySurfaceIfReady()
+
+    /** Ensures TextureView has a Surface after the overlay container becomes visible. */
+    fun ensureVideoSurfaceReady() {
+        streamingScreen.ensureSurfaceReady()
+    }
 
     /** Releases the retained TextureView SurfaceTexture. Call from Activity.onDestroy. */
     fun releaseRetainedSurface() = streamingScreen.releaseRetainedSurface()

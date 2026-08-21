@@ -89,15 +89,13 @@ class StreamingScreen @JvmOverloads constructor(
                     // Re-bind the TextureView to the SurfaceTexture MediaCodec is still using.
                     runCatching { textureView.setSurfaceTexture(retained) }
                         .onFailure { Logger.e("StreamingScreen: reattach SurfaceTexture failed", it) }
+                    // New Surface wrapper so MirrorStreamServer sees identity change and rebuilds.
+                    bindSurfaceFromTexture(retained)
                     Logger.d("StreamingScreen: reattached retained SurfaceTexture")
                     onSurfaceReady?.invoke()
                     return
                 }
-                retainedTexture = st
-                if (surface == null || surface?.isValid != true) {
-                    surface?.release()
-                    surface = Surface(st)
-                }
+                bindSurfaceFromTexture(st)
                 Logger.d("StreamingScreen: Surface ready (TextureView)")
                 onSurfaceReady?.invoke()
             }
@@ -123,6 +121,28 @@ class StreamingScreen @JvmOverloads constructor(
             Logger.d("StreamingScreen: Surface already valid — re-notifying")
             onSurfaceReady?.invoke()
         }
+    }
+
+    /**
+     * Ensures a valid [Surface] exists after the overlay becomes visible.
+     *
+     * WHY: While [streaming_container] is GONE, TextureView may not allocate a
+     * SurfaceTexture until layout after showStreaming. onResume can notify the service
+     * before surfaceCreated runs — this closes the gap for manual reopen and auto-launch.
+     */
+    fun ensureSurfaceReady() {
+        if (!isAttachedToWindow) return
+        val st = textureView.surfaceTexture
+        if (st != null && (surface == null || surface?.isValid != true)) {
+            bindSurfaceFromTexture(st)
+        }
+        notifySurfaceIfReady()
+    }
+
+    private fun bindSurfaceFromTexture(st: SurfaceTexture) {
+        retainedTexture = st
+        surface?.release()
+        surface = Surface(st)
     }
 
     /**

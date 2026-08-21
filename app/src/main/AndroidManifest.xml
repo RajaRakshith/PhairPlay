@@ -44,6 +44,9 @@
     <!-- Foreground service notification (Android 13+ requires runtime grant) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Bring PhairPlay task to front when AirPlay starts while another TV app is visible -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+
     <!--
         Declare this app as a TV app (leanback).
         Required for the app to appear in the TV launcher.

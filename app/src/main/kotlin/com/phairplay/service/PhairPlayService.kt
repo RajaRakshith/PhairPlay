@@ -94,6 +94,8 @@ class PhairPlayService : Service() {
     // The lambda captures this field so it always uses the latest provider even if
     // setVideoSurfaceProvider() is called after startAirPlay().
     @Volatile private var videoSurfaceProvider: (() -> Surface?)? = null
+    /** MainActivity instance token — stale onDestroy must not clear a newer Activity's provider. */
+    @Volatile private var videoSurfaceProviderOwner: Any? = null
 
     // Receiver instances — null when not running
     private var airPlayReceiver: AirPlayReceiver? = null
@@ -157,10 +159,28 @@ class PhairPlayService : Service() {
      * Call with `{ null }` (or simply don't call) during Activity destruction so we stop
      * holding a reference to the Activity's Surface after the window is gone.
      *
+     * @param owner Activity instance token; only this owner may [clearVideoSurfaceProvider].
      * @param provider Lambda that returns the current [Surface], or null if unavailable.
      */
-    fun setVideoSurfaceProvider(provider: () -> Surface?) {
+    fun setVideoSurfaceProvider(owner: Any, provider: () -> Surface?) {
+        videoSurfaceProviderOwner = owner
         videoSurfaceProvider = provider
+    }
+
+    /**
+     * Clears the surface provider when [owner] is still registered.
+     *
+     * WHY: Home often destroys MainActivity while the service keeps mirroring. A new
+     * instance may register its provider before the old onDestroy runs; unconditional
+     * clear leaves MediaCodec with no output target (black overlay, audio continues).
+     *
+     * @return true when this owner held the provider and it was cleared.
+     */
+    fun clearVideoSurfaceProvider(owner: Any): Boolean {
+        if (!SurfaceProviderPolicy.shouldClear(videoSurfaceProviderOwner, owner)) return false
+        videoSurfaceProvider = null
+        videoSurfaceProviderOwner = null
+        return true
     }
 
     /**

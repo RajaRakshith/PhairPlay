@@ -38,6 +38,8 @@ sourceSets {
             exclude(
                 "**/ui/**",
                 "**/MainActivity.kt",
+                "**/SessionLaunchHelper.kt",
+                "**/AppForegroundTracker.kt",
                 "**/PhairPlayApp.kt",
                 "**/settings/SettingsRepository.kt",
                 "**/service/PhairPlayService.kt",

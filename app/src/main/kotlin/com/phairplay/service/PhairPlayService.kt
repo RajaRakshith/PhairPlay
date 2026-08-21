@@ -9,10 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.phairplay.MainActivity
+import com.phairplay.OverlaySessionPolicy
+import com.phairplay.PhairPlayApp
 import com.phairplay.R
+import com.phairplay.SessionLaunchHelper
 import android.view.Surface
 import com.phairplay.airplay.AirPlayReceiver
 import com.phairplay.cast.CastReceiver
@@ -97,6 +102,7 @@ class PhairPlayService : Service() {
 
     // Settings — read once when starting, re-read on restart
     private lateinit var settingsRepository: SettingsRepository
+    private lateinit var sessionLaunchHelper: SessionLaunchHelper
 
     // ─── Service Lifecycle ───────────────────────────────────────────────────
 
@@ -104,6 +110,11 @@ class PhairPlayService : Service() {
         super.onCreate()
         Logger.i("PhairPlayService created")
         settingsRepository = SettingsRepository(applicationContext)
+        val app = application as PhairPlayApp
+        sessionLaunchHelper = SessionLaunchHelper(
+            appContext = applicationContext,
+            isAppInForeground = { app.foregroundTracker.isInForeground },
+        )
         createNotificationChannel()
     }
 
@@ -274,15 +285,19 @@ class PhairPlayService : Service() {
                     mimeType = imageType.mimeType
                 )
                 updateNotification(isRunning = true)
+                refreshOverlaySessionLaunch()
             },
             onPhotoCleared = {
                 _photoFrame.value = null
+                refreshOverlaySessionLaunch()
             },
             onNowPlayingChanged = { info ->
                 _nowPlaying.value = info
+                refreshOverlaySessionLaunch()
             },
             onPinChanged = { pin ->
                 _pairingPin.value = pin
+                refreshOverlaySessionLaunch()
             },
             onStateChanged = { state ->
                 _airPlayState.value = state
@@ -301,6 +316,7 @@ class PhairPlayService : Service() {
                                                        state != ProtocolState.ERROR)
                     }
                 }
+                refreshOverlaySessionLaunch()
             }
         ).also { it.start() }
         Logger.d("AirPlay receiver started (displayName='${settings.effectiveDisplayName}')")
@@ -337,6 +353,26 @@ class PhairPlayService : Service() {
         _photoFrame.value = null
         _nowPlaying.value = null
         _pairingPin.value = null
+        refreshOverlaySessionLaunch()
+    }
+
+    /**
+     * Brings MainActivity to the foreground when an overlay session starts while the app is backgrounded.
+     */
+    private fun refreshOverlaySessionLaunch() {
+        val overlayActive = OverlaySessionPolicy.isOverlayActive(
+            airPlayState = _airPlayState.value,
+            nowPlaying = _nowPlaying.value,
+            photoFrame = _photoFrame.value,
+            pin = _pairingPin.value,
+        )
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            sessionLaunchHelper.onOverlayActiveChanged(overlayActive)
+        } else {
+            Handler(Looper.getMainLooper()).post {
+                sessionLaunchHelper.onOverlayActiveChanged(overlayActive)
+            }
+        }
     }
 
     // ─── Notification ────────────────────────────────────────────────────────

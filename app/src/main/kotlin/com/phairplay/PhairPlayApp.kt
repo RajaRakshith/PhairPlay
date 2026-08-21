@@ -18,8 +18,12 @@ import timber.log.Timber
  */
 class PhairPlayApp : Application() {
 
+    lateinit var foregroundTracker: AppForegroundTracker
+        private set
+
     override fun onCreate() {
         super.onCreate()
+        foregroundTracker = AppForegroundTracker(this)
         initLogging()
     }
 
